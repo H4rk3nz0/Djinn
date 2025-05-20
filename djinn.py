@@ -9,7 +9,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument('-d','--debug', help='Enable Verbose Log Output', action='store_true', default=False)
 parser.add_argument('-n','--name', help='Engagement/Client Name (Creating separate db file names)', default='default')
 parser.add_argument("-p", "--port", type=int, help="The GraphSpy port (Default: 5000)", default=5000)
-parser.add_argument("-i","--interface", type=str, help="GraphSpy interface (Default: 127.0.0.1)", default='127.0.0.1')
+parser.add_argument("-i","--ip", type=str, help="GraphSpy IP (Default: 127.0.0.1)", default='127.0.0.1')
 argsp = parser.parse_args()
 
 # Initilize imports

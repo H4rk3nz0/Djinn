@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from flask import Flask,render_template,request,g,redirect,Response
-from flask import request as reqq
 import flask.helpers
 import requests
 import jwt
@@ -12,6 +11,9 @@ from threading import Thread
 import json, base64, uuid, urllib.parse
 import re
 import pyotp
+
+with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),"version.txt")) as f:
+    __version__ = f.read()
 
 import lib.Util as Util
 util = Util.util()
@@ -80,30 +82,30 @@ def update_db():
     latest_schema_version = "4"
     current_schema_version = query_db("SELECT value FROM settings where setting = 'schema_version'",one=True)[0]
     if current_schema_version == "1":
-        util.print_w("Current database is schema version 1, updating to schema version 2")
+        print("[*] Current database is schema version 1, updating to schema version 2")
         execute_db("CREATE TABLE request_templates (id INTEGER PRIMARY KEY AUTOINCREMENT, template_name TEXT, uri TEXT, method TEXT, request_type TEXT, body TEXT, headers TEXT, variables TEXT)")
         execute_db("UPDATE settings SET value = '2' WHERE setting = 'schema_version'")
-        util.print_c("Updated database to schema version 2")
+        print("[*] Updated database to schema version 2")
         current_schema_version = query_db("SELECT value FROM settings where setting = 'schema_version'",one=True)[0]
     if current_schema_version == "2":
-        util.print_w("Current database is schema version 2, updating to schema version 3")
+        print("[*] Current database is schema version 2, updating to schema version 3")
         execute_db('CREATE TABLE teams_settings (access_token_id INTEGER PRIMARY KEY, skypeToken TEXT, skype_id TEXT, issued_at INTEGER, expires_at INTEGER, teams_settings_raw TEXT)')
         execute_db("UPDATE settings SET value = '3' WHERE setting = 'schema_version'")
-        util.print_c("Updated database to schema version 3")
+        print("[*] Updated database to schema version 3")
         current_schema_version = query_db("SELECT value FROM settings where setting = 'schema_version'",one=True)[0]
     if current_schema_version == "3":
-        util.print_w("Current database is schema version 3, updating to schema version 4")
+        print("[*] Current database is schema version 3, updating to schema version 4")
         execute_db('CREATE TABLE mfa_otp (id INTEGER PRIMARY KEY AUTOINCREMENT, stored_at TEXT, secret_key TEXT, account_name INTEGER, description TEXT)')
         execute_db("UPDATE settings SET value = '4' WHERE setting = 'schema_version'")
-        util.print_c("Updated database to schema version 4")
+        print("[*] Updated database to schema version 4")
         current_schema_version = query_db("SELECT value FROM settings where setting = 'schema_version'",one=True)[0]
 
 # ========== Helper Functions ==========
 
-def create_response(status_code, message, data = None):
-    response_body = {
-        "message": message
-    }
+def create_response(status_code, message = None, data = None):
+    response_body = {}
+    if message != None:
+        response_body["message"] = message
     if data != None:
         response_body["data"] = data
     return response_body, status_code
@@ -122,19 +124,24 @@ def set_user_agent(user_agent):
     else:
         return False
 
-def graph_request(graph_uri, access_token_id):
+def graph_request(graph_uri, access_token_id, method = "GET", body = {}):
     access_token = query_db("SELECT accesstoken FROM accesstokens where id = ?",[access_token_id],one=True)[0]
     headers = {"Authorization":f"Bearer {access_token}", "User-Agent":get_user_agent()}
-    response = requests.get(graph_uri, headers=headers)
-    resp_json = response.json()
-    return json.dumps(resp_json)
-
-def graph_request_post(graph_uri, access_token_id, body):
-    access_token = query_db("SELECT accesstoken FROM accesstokens where id = ?",[access_token_id],one=True)[0]
-    headers = {"Authorization":f"Bearer {access_token}", "User-Agent":get_user_agent()}
-    response = requests.post(graph_uri, headers=headers, json=body)
-    resp_json = response.json()
-    return json.dumps(resp_json)
+    if method == "GET":
+        response = requests.get(graph_uri, headers=headers)
+    elif method == "POST":
+        response = requests.post(graph_uri, headers=headers, json=body)
+    elif method == "DELETE":
+        response = requests.delete(graph_uri, headers=headers, json=body)
+    elif method == "PATCH":
+        response = requests.patch(graph_uri, headers=headers, json=body)
+    elif method == "PUT":
+        response = requests.put(graph_uri, headers=headers, json=body)
+    try:
+        resp_json = response.json()
+        return json.dumps(resp_json)
+    except ValueError:
+        return response.text if response.text else ""
 
 def graph_upload_request(upload_uri, access_token_id, file):
     access_token_entry = query_db("SELECT accesstoken FROM accesstokens WHERE id = ?", [access_token_id], one=True)
@@ -146,7 +153,7 @@ def graph_upload_request(upload_uri, access_token_id, file):
 
     response = requests.put(upload_uri, headers=headers, data=file.read())
 
-    if response.status_code in [200, 201]:
+    if response.status_code in [200, 201, 202]:
         return json.dumps({"message": "File uploaded successfully."}), response.status_code
     else:
         return json.dumps({"error": "Failed to upload file.", "details": response.text}), response.status_code
@@ -473,44 +480,42 @@ def get_security_info_error(error_id):
     return add_security_info_error_dict[error_id] if error_id in add_security_info_error_dict else add_security_info_error_dict[0]
 
 def get_session_ctx(access_token_id):
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
         headers = {"Authorization":f"Bearer {access_token}", "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/Authorize"
+        uri = "https://mysignins.microsoft.com/api/session/authorize"
         response = requests.post(uri, headers=headers, json={})
         if response.status_code != 200:
-            gspy_log.error(f"Failed to obtain SessionCtx value. Received status code {response.status_code}")
+            gspy_log.error(f"Failed to obtain sessionCtxV2 value. Received status code {response.status_code}")
             return False
-            # Remove the random garbage at the front of the response: )]}',\n
-        sessionCtx = json.loads(response.text[6:])["sessionCtx"]
-        gspy_log.debug(f"Received sessionCtx: '{sessionCtx}'")
-        return sessionCtx
+        sessionCtxV2 = response.json()["sessionCtxV2"]
+        gspy_log.debug(f"Received sessionCtxV2: '{sessionCtxV2}'")
+        return sessionCtxV2
     except Exception as e:
-        gspy_log.error(f"Failed to obtain SessionCtx value.")
+        gspy_log.error(f"Failed to obtain sessionCtxV2 value.")
         traceback.print_exc()
         return False
 
 def get_available_authentication_info(access_token_id):
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/AvailableAuthenticationInfo"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/authenticationmethods/availablemethods"
         response = requests.get(uri, headers=headers)
         if response.status_code != 200:
             gspy_log.error(f"Failed to obtain AvailableAuthenticationInfo. Received status code {response.status_code}")
             return False
         gspy_log.debug(f"AvailableAuthenticationInfo Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        availableAuthenticationInfo = json.loads(response.text[6:])
+        availableAuthenticationInfo = response.json()
         availableAuthenticationInfo_parsed = [{**availableAuthenticationInfo[method], "MethodName":method} for method in availableAuthenticationInfo.keys()]
         return availableAuthenticationInfo_parsed
     except Exception as e:
@@ -519,15 +524,15 @@ def get_available_authentication_info(access_token_id):
         return False
 
 def validate_captcha(access_token_id, challenge_id, captcha_solution, azure_region, challenge_type = "Visual"):
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/ValidateCaptcha"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/captcha/validation"
         body = {
             "ChallengeType": challenge_type,
             "ChallengeId": challenge_id,
@@ -539,8 +544,7 @@ def validate_captcha(access_token_id, challenge_id, captcha_solution, azure_regi
             gspy_log.error(f"Failed to validate captcha. Received status code {response.status_code}")
             return False
         gspy_log.debug(f"ValidateCaptcha Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        captcha_response = json.loads(response.text[6:])
+        captcha_response = response.json()
         return captcha_response
     except Exception as e:
         gspy_log.error(f"ValidateCaptcha request failed.")
@@ -548,15 +552,15 @@ def validate_captcha(access_token_id, challenge_id, captcha_solution, azure_regi
         return False
 
 def initialize_mobile_app_registration(access_token_id, security_info_type):
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/InitializeMobileAppRegistration"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/authenticationmethods/initializemobileapp"
         body = {
             "securityInfoType": security_info_type
         }
@@ -565,8 +569,7 @@ def initialize_mobile_app_registration(access_token_id, security_info_type):
             gspy_log.error(f"InitializeMobileAppRegistration request failed. Received status code {response.status_code}")
             return False
         gspy_log.debug(f"InitializeMobileAppRegistration Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        registrationInfo = json.loads(response.text[6:])
+        registrationInfo = response.json()
         return registrationInfo
     except Exception as e:
         gspy_log.error(f"InitializeMobileAppRegistration request failed.")
@@ -577,27 +580,27 @@ def delete_security_info(access_token_id, security_info_type, data):
     # Types:
     #   1 - AuthenticatorApp
     #   6 - MobilePhone
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/DeleteSecurityInfo"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "X-Ms-Client-Session-Id":str(uuid.uuid4()), "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/authenticationmethods/delete"
         body_data = json.dumps(data) if type(data) == dict else data
         body = {
             "Type": security_info_type,
             "Data": body_data
         }
+        gspy_log.debug(f"DeleteSecurityInfo Raw Request Body:\n{body}")
         response = requests.post(uri, headers=headers, json=body)
+        gspy_log.debug(f"DeleteSecurityInfo Raw Response:\n{response.text}")
         if response.status_code != 200:
             gspy_log.error(f"DeleteSecurityInfo request failed. Received status code {response.status_code}")
             return False
-        gspy_log.debug(f"DeleteSecurityInfo Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        security_info_response = json.loads(response.text[6:])
+        security_info_response = response.json()
         if (not security_info_response) or ((not ("Deleted" in security_info_response)) or (not (security_info_response["Deleted"]))):
             gspy_log.error(f"DeleteSecurityInfo request failed. Received response: \n{security_info_response}")
             return False
@@ -608,15 +611,15 @@ def delete_security_info(access_token_id, security_info_type, data):
         return False
 
 def add_security_info(access_token_id, security_info_type, data = None):
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/AddSecurityInfo"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "X-Ms-Client-Session-Id":str(uuid.uuid4()), "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/authenticationmethods/new"
         body = {
             "Type": security_info_type
         }
@@ -624,22 +627,21 @@ def add_security_info(access_token_id, security_info_type, data = None):
         if body_data:
             body["Data"] = body_data
         response = requests.post(uri, headers=headers, json=body)
+        gspy_log.debug(f"AddSecurityInfo Raw Response:\n{response.text}")
         if response.status_code != 200:
             gspy_log.error(f"AddSecurityInfo request failed. Received status code {response.status_code}")
             return False
-        gspy_log.debug(f"AddSecurityInfo Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        security_info_response = json.loads(response.text[6:])
+        security_info_response = response.json()
         if (not security_info_response) or (not "VerificationContext" in security_info_response):
             gspy_log.error(f"AddSecurityInfo request failed. Received response: \n{security_info_response}")
             return False
         if (not security_info_response["VerificationContext"]) and security_info_response["ErrorCode"] == 28:
             # ErrorCode 28 indicates that a Captcha needs to be solved (happens after a couple of failed attempts in a short timeframe)
             gspy_log.debug(f"We need to solve a captcha...")
-            captcha_uri = "https://account.activedirectory.windowsazure.com/securityinfo/Captcha?challengeType=Visual"
+            captcha_uri = "https://mysignins.microsoft.com/api/captcha/?challengeType=Visual&locale=en-US"
             captcha_response = requests.get(captcha_uri, headers=headers)
             gspy_log.debug(f"Captcha Raw Response:\n{captcha_response.text}")
-            captcha_response_json = json.loads(captcha_response.text[6:])
+            captcha_response_json = captcha_response.json()
             security_info_response["captcha"] = captcha_response_json
         return security_info_response
     except Exception as e:
@@ -656,15 +658,15 @@ def verify_security_info(access_token_id, security_info_type, verification_conte
     #   8 - Email
     #   11 - AltMobilePhone
     #   12 - FIDO
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
         return False
     access_token = access_token[0]
     try:
-        sessionCtx = get_session_ctx(access_token_id)
-        headers = {"Authorization":f"Bearer {access_token}", "Sessionctx":sessionCtx, "User-Agent":get_user_agent()}
-        uri = "https://account.activedirectory.windowsazure.com/securityinfo/VerifySecurityInfo"
+        sessionCtxV2 = get_session_ctx(access_token_id)
+        headers = {"Authorization":f"Bearer {access_token}", "Sessionctxv2":sessionCtxV2, "User-Agent":get_user_agent()}
+        uri = "https://mysignins.microsoft.com/api/authenticationmethods/verify"
         body = {
             "Type": security_info_type,
             "VerificationData": verification_data,
@@ -675,28 +677,27 @@ def verify_security_info(access_token_id, security_info_type, verification_conte
             gspy_log.error(f"VerifySecurityInfo request failed. Received status code {response.status_code}")
             return False
         gspy_log.debug(f"VerifySecurityInfo Raw Response:\n{response.text}")
-        # Remove the random garbage at the front of the response: )]}',\n
-        verifysecurity_info_response = json.loads(response.text[6:])
+        verifysecurity_info_response = response.json()
         return verifysecurity_info_response
     except Exception as e:
         gspy_log.error(f"VerifySecurityInfo request failed.")
         traceback.print_exc()
         return False
 
-def add_phone_number(access_token_id, country_code, phone_number, phone_type = "MobilePhone_sms"):
+def add_phone_number(access_token_id, country_code, phone_number, phone_type = "mobilePhone_sms"):
     data = {
         "phoneNumber": phone_number,
         "countryCode": country_code
     }
 
-    if not phone_type in ["MobilePhone_call", "MobilePhone_sms", "AltMobilePhone", "OfficePhone"]:
+    if not phone_type in ["mobilePhone_call", "mobilePhone_sms", "altMobilePhone", "officePhone"]:
         gspy_log.error(f"Invalid phone type provided: {phone_type}.")
         return False
     phone_type_dict = {
-        "MobilePhone_call": 5,
-        "MobilePhone_sms": 6,
-        "OfficePhone": 7,
-        "AltMobilePhone": 11
+        "mobilePhone_call": 5,
+        "mobilePhone_sms": 6,
+        "officePhone": 7,
+        "altMobilePhone": 11
     }
 
     security_info_response = add_security_info(access_token_id, phone_type_dict[phone_type], data)
@@ -753,7 +754,7 @@ def add_graphspy_otp(access_token_id, description = ""):
         otp_code = pyotp.TOTP(secret_key).now()
         verify_security_info_response = verify_security_info(access_token_id, 3, security_info_response["VerificationContext"], otp_code)
         if ("ErrorCode" in verify_security_info_response and verify_security_info_response["ErrorCode"]):
-            gspy_log.error(f"An error occurred when trying to validate the provided info. Received Error Code {response.ErrorCode}")
+            gspy_log.error(f"An error occurred when trying to validate the provided info. Received Error Code {verify_security_info_response.ErrorCode}")
             return False
         execute_db("INSERT INTO mfa_otp (stored_at, secret_key, account_name, description) VALUES (?,?,?,?)",(
             f"{datetime.now()}".split(".")[0],
@@ -769,10 +770,10 @@ def add_graphspy_otp(access_token_id, description = ""):
 
 def add_security_key(access_token_id, key_description = "GraphSpy Key", client_type = "Windows", device_pin = None):
     app.config["add_security_key_status"] = "INIT"
-    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%0000000c-0000-0000-c000-000000000000%'",[access_token_id],one=True)
+    access_token = query_db("SELECT accesstoken FROM accesstokens WHERE id = ? AND resource LIKE '%19db86c3-b2b9-44cc-b339-36da233a3be2%'",[access_token_id],one=True)
     if not access_token:
-        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
-        return create_response(400, f"No access token with ID {access_token_id} and resource containing '0000000c-0000-0000-c000-000000000000'!")
+        gspy_log.error(f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
+        return create_response(400, f"No access token with ID {access_token_id} and resource containing '19db86c3-b2b9-44cc-b339-36da233a3be2'!")
     access_token = access_token[0]
     from fido2.hid import CtapHidDevice
     from fido2.client import Fido2Client, WindowsClient, UserInteraction
@@ -811,8 +812,7 @@ def add_security_key(access_token_id, key_description = "GraphSpy Key", client_t
         },
         "attestation": "direct",
         "extensions": {
-            "hmacCreateSecret": True,
-            "credentialProtectionPolicy": "userVerificationOptional"
+            "hmacCreateSecret": True
         }
     }
     app.config["add_security_key_status"] = "CLIENT_SETUP"
@@ -858,7 +858,7 @@ def add_security_key(access_token_id, key_description = "GraphSpy Key", client_t
     client_data_json = json.loads(credential.client_data)
     client_data_json_base64 = base64.urlsafe_b64encode(json.dumps(client_data_json, separators=(',',':')).encode("utf-8")).decode()
     credential_id_base64 = base64.urlsafe_b64encode(credential.attestation_object.auth_data.credential_data.credential_id).decode()
-    extension_results_json_base64 = base64.urlsafe_b64encode(json.dumps(credential.extension_results).encode("utf-8")).decode()
+    extension_results_json_base64 = base64.urlsafe_b64encode(str(credential.extension_results).encode("utf-8")).decode()
     verification_data = {
         "Name": key_description,
         "Canary": security_info_data["requestData"]["canary"],
@@ -866,7 +866,9 @@ def add_security_key(access_token_id, key_description = "GraphSpy Key", client_t
         "ClientDataJson": client_data_json_base64,
         "CredentialId": credential_id_base64,
         "ClientExtensionResults": extension_results_json_base64,
-        "PostInfo": ""
+        "PostInfo": "",
+        "AAGuid": str(uuid.uuid4()),
+        "CredentialDeviceType": "singleDevice"
     }
     response = verify_security_info(access_token_id, 12, None, json.dumps(verification_data, separators=(',',':')))
     if response["ErrorCode"] != 0:
@@ -934,6 +936,8 @@ def safe_join(directory, filename):
 
 def init_routes():
 
+    # ========== Pages ==========
+
     @app.route("/")
     def settings():
         return render_template('settings.html', title="Settings")
@@ -990,6 +994,10 @@ def init_routes():
     def outlook():
         return render_template('outlook.html', title="Outlook")
 
+    @app.route("/outlook_graph")
+    def outlook_graph():
+        return render_template('outlook_graph.html', title="Outlook Graph")
+        
     @app.route("/teams")
     def teams():
         return render_template('teams.html', title="Microsoft Teams")
@@ -1054,9 +1062,9 @@ def init_routes():
         if not "phone_number" in request.form:
             return f"[Error] No phone_number specified.", 400
         phone_number = request.form['phone_number']
-        phone_type = request.form['phone_type'] if "phone_type" in request.form else "MobilePhone"
-        if not phone_type in ["MobilePhone_sms", "MobilePhone_call", "AltMobilePhone", "OfficePhone"]:
-            return f"[Error] Unknown phone_type specified. Allowed options: MobilePhone_sms, MobilePhone_call, AltMobilePhone, OfficePhone", 400
+        phone_type = request.form['phone_type'] if "phone_type" in request.form else "mobilePhone_sms"
+        if not phone_type in ["mobilePhone_sms", "mobilePhone_call", "altMobilePhone", "officePhone"]:
+            return f"[Error] Unknown phone_type specified. Allowed options: mobilePhone_sms, mobilePhone_call, altMobilePhone, officePhone", 400
         
         add_phone_number_response = add_phone_number(access_token_id, country_code, phone_number, phone_type)
         if not add_phone_number_response:
@@ -1361,15 +1369,9 @@ def init_routes():
     def api_generic_graph():
         graph_uri = request.form['graph_uri']
         access_token_id = request.form['access_token_id']
-        graph_response = graph_request(graph_uri, access_token_id)
-        return graph_response
-    
-    @app.post("/api/generic_graph_post")
-    def api_generic_graph_post():
-        graph_uri = request.form['graph_uri']
-        access_token_id = request.form['access_token_id']
-        body = json.loads(request.form['body'])
-        graph_response = graph_request_post(graph_uri, access_token_id, body)
+        method = request.form.get('method', 'GET')
+        body = json.loads(request.form.get('body', '{}'))
+        graph_response = graph_request(graph_uri, access_token_id, method, body)
         return graph_response
     
     @app.route('/api/generic_graph_upload', methods=['POST'])
@@ -1700,7 +1702,7 @@ def init_routes():
                 })
                 response = requests.post(uri, headers=headers, json=body)
                 if response.status_code >= 200 and response.status_code < 300 and "Location" in response.headers:
-                    conversation_id_regex = re.search(r'https:\/\/emea\.ng\.msg\.teams\.microsoft\.com\/v1\/threads\/(.*)$', response.headers["Location"])
+                    conversation_id_regex = re.search(r'https://emea\.ng\.msg\.teams\.microsoft\.com/v1/threads/(.*)$', response.headers["Location"])
                     if conversation_id_regex:
                         conversation_id = conversation_id_regex.group(1)
                         created_conversations.append(conversation_id)
@@ -1719,7 +1721,7 @@ def init_routes():
             }
             response = requests.post(uri, headers=headers, json=body)
             if response.status_code >= 200 and response.status_code < 300 and "Location" in response.headers:
-                conversation_id_regex = re.search(r'https:\/\/emea\.ng\.msg\.teams\.microsoft\.com\/v1\/threads\/(.*)$', response.headers["Location"])
+                conversation_id_regex = re.search(r'https://emea\.ng\.msg\.teams\.microsoft\.com/v1/threads/(.*)$', response.headers["Location"])
                 if conversation_id_regex:
                     conversation_id = conversation_id_regex.group(1)
                     created_conversations.append(conversation_id)
@@ -1927,21 +1929,10 @@ def init_routes():
         db = getattr(g, '_database', None)
         if db is not None:
             db.close()
-
-def stop():
-    try:
-        func = reqq.environ.get('werkzeug.server.shutdown')
-        if func is None:
-            raise RuntimeError('Not Running with WerkZeug Server')
-        func()
-    except RuntimeError as e:
-        os._exit(0)
-
-def empty():
-    return
-
 def run(args):
-    # Configure logging
+    # Banner
+    print(fr"""[!] GraphSpy is made and owned by RedByte1337, current version: v{__version__}""")
+
     global gspy_log
     gspy_log = logging.getLogger(__name__)
     gspy_log.setLevel(logging.DEBUG if args.debug else logging.ERROR)
@@ -1994,7 +1985,7 @@ def run(args):
     # Disable datatable error messages by default.
     app.config['table_error_messages'] = "disabled"
     # Run flask
-    util.print_c(f"Hosting GraphSpy on: {args.interface}:{args.port}")
+    util.print_c(f"Hosting GraphSpy on: {args.ip}:{args.port}")
     log = logging.getLogger('werkzeug')
     log.setLevel(logging.ERROR)
-    app.run(debug=args.debug, host=args.interface, port=args.port, use_reloader=False)
+    app.run(debug=args.debug, host=args.ip, port=args.port, use_reloader=False)
