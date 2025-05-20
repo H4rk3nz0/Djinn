@@ -20,18 +20,12 @@ code_tracker = {}
 
 class djinn:
 	def __init__(self):
-		#self.check_uid()
 		self.djinnserverThread = threading.Thread(target=djinnserver.run, args=(code_tracker,))
 		self.djinnserverThread.start()
 		self.gspyThread = threading.Thread(target=gspy.run, args=(argsp,))
 		self.gspyThread.start()
 		for sig in [signal.SIGTERM, signal.SIGABRT, signal.SIGINT]:
 			signal.signal(sig, self.sig_handler)
-
-	def check_uid(self):
-		if os.getuid() != 0:
-			util.print_f('Please run with sudo')
-			exit()
 
 	# Register interrup/shutdown handling and cleaning
 	def sig_handler(self, sig, frame):
